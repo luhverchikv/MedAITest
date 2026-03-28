@@ -61,10 +61,7 @@ def show_db_stats():
     print(f"   - Всего вопросов: {total}")
     print(f"   - С одним ответом: {total - multiple}")
     print(f"   - С несколькими ответами: {multiple}")
-    print(f"\n🔍 Первые 3 вопроса:")
-    for q in questions[:3]:
-        print(f"   • ID {q['id']}: {q['text'][:50]}... [{'мульти' if q['is_multiple'] else 'один'} ответ, ключ: {q['correct_indices']}]")
-
+    
 if __name__ == "__main__":
     import sys
     
