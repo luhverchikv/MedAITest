@@ -131,7 +131,7 @@ def parse_tests_file(filepath: str) -> List[Dict]:
             'is_multiple': is_multiple
         })
         
-        print(f"✓ Спаршен вопрос #{len(questions)}: '{question_text[:40]}...' ({'мультивыбор' if is_multiple else 'один ответ'})")
+        #print(f"✓ Спаршен вопрос #{len(questions)}: '{question_text[:40]}...' ({'мультивыбор' if is_multiple else 'один ответ'})")
     
     return questions
 
