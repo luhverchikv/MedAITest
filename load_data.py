@@ -15,7 +15,7 @@ def load_questions_to_db(filepath: str, clear_first: bool = False):
     
     # Парсим файл
     print(f"\n📄 Читаем файл: {filepath}")
-    questions = parse_tests_file(filepath)
+    questions = parse_tests_file(filepath, verbose=True)
     
     if not questions:
         print("❌ Не найдено вопросов для загрузки")
