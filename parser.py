@@ -1,6 +1,6 @@
 # parser.py
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Tuple
 
 # Глобальный список для сбора вопросов с частичными совпадениями
 _partial_matches_log: List[Dict] = []
@@ -14,35 +14,70 @@ def normalize_text(text: str) -> str:
     return text
 
 
-def parse_tests_file(filepath: str, verbose: bool = True) -> List[Dict]:
+def _find_match(correct_text: str, options: List[str], allow_partial: bool = False) -> Tuple[List[int], List[Dict]]:
     """
-    Парсит файл с вопросами в вашем формате.
-    
-    Формат входных данных:
-    Вопрос 19: Текст вопроса:
-    Вариант 1
-    Вариант 2
-    Вариант 3
-    Правильный ответ: Текст варианта
-    ИЛИ
-    Правильные ответы: Текст1, Текст2
+    Ищет совпадение текста правильного ответа с вариантами.
     
     Параметры:
-        verbose: если True, выводит только вопросы с частичными совпадениями
+        correct_text: текст для поиска
+        options: список вариантов ответа
+        allow_partial: если True, допускает поиск подстроки (частичное совпадение)
     
-    Возвращает список словарей:
-    [
-        {
-            'text': 'Текст вопроса',
-            'options': ['Вариант 1', 'Вариант 2', ...],
-            'correct_indices': [1, 3],
-            'is_multiple': False
-        },
-        ...
-    ]
+    Возвращает:
+        (list_of_matched_indices, list_of_partial_match_details)
+    """
+    options_normalized = [(i+1, normalize_text(opt)) for i, opt in enumerate(options)]
+    correct_norm = normalize_text(correct_text)
+    
+    matched_indices = []
+    partial_details = []
+    
+    # 1. Точное совпадение
+    for idx, opt_norm in options_normalized:
+        if correct_norm == opt_norm:
+            matched_indices.append(idx)
+            return matched_indices, partial_details
+    
+    # 2. Частичное совпадение (только если разрешено и текст достаточно длинный)
+    if allow_partial and len(correct_norm) >= 15:
+        for idx, opt_norm in options_normalized:
+            if correct_norm in opt_norm or opt_norm in correct_norm:
+                # Оцениваем качество совпадения
+                overlap = len(correct_norm) / max(len(opt_norm), len(correct_norm))
+                if overlap >= 0.75:  # Требуем минимум 75% перекрытия
+                    matched_indices.append(idx)
+                    partial_details.append({
+                        'correct_text': correct_text,
+                        'matched_option_idx': idx,
+                        'matched_option_text': options[idx-1],
+                        'overlap_ratio': round(overlap, 2)
+                    })
+                    return matched_indices, partial_details
+    
+    # 3. Не найдено
+    if allow_partial:
+        partial_details.append({
+            'correct_text': correct_text,
+            'matched_option_idx': None,
+            'matched_option_text': None,
+            'error': 'NOT_FOUND'
+        })
+    
+    return matched_indices, partial_details
+
+
+def parse_tests_file(filepath: str, verbose: bool = True) -> List[Dict]:
+    """
+    Парсит файл с вопросами по улучшенной логике.
+    
+    Алгоритм:
+    1. Если в правильном ответе НЕТ запятых → один ответ → точное сравнение
+    2. Если ЕСТЬ запятые:
+       а) Сначала пробуем точное совпадение ВСЕЙ строки (один ответ с запятой внутри)
+       б) Если не нашли → разбиваем по запятой и ищем каждый ответ отдельно
     """
     global _partial_matches_log
-    _partial_matches_log = []  # Сбрасываем лог при новом запуске
+    _partial_matches_log = []
     
     questions = []
     
@@ -64,7 +99,7 @@ def parse_tests_file(filepath: str, verbose: bool = True) -> List[Dict]:
         # === Парсим заголовок вопроса ===
         header_match = re.match(r'Вопрос\s*\d+\s*:\s*(.+)', lines[0], re.IGNORECASE)
         if not header_match:
-            continue  # Тихо пропускаем блоки без заголовка
+            continue
         
         question_text = header_match.group(1).strip()
         question_id_match = re.search(r'Вопрос\s*(\d+)', lines[0])
@@ -73,73 +108,82 @@ def parse_tests_file(filepath: str, verbose: bool = True) -> List[Dict]:
         # === Ищем строку с правильными ответами ===
         correct_line_idx = None
         for i, line in enumerate(lines):
-            if line.lower().startswith('правильный ответ:') or line.lower().startswith('правильные ответы:'):
+            line_lower = line.lower()
+            if line_lower.startswith('правильный ответ:') or line_lower.startswith('правильные ответы:'):
                 correct_line_idx = i
                 break
         
         if correct_line_idx is None:
-            continue  # Пропускаем вопросы без правильных ответов
+            continue
         
-        # === Извлекаем варианты ответов (между вопросом и правильным ответом) ===
+        # === Извлекаем варианты ответов ===
         options_lines = lines[1:correct_line_idx]
         options = [opt for opt in options_lines if opt and not opt.lower().startswith('вопрос')]
         
         if not options:
-            continue  # Пропускаем вопросы без вариантов
+            continue
         
         # === Парсим правильные ответы ===
         correct_line = lines[correct_line_idx]
         correct_part = correct_line.split(':', 1)[1].strip()
         
-        # Разбиваем на отдельные ответы (по запятой или точке с запятой)
-        correct_texts_raw = re.split(r'[,;]', correct_part)
-        correct_texts = [normalize_text(ct) for ct in correct_texts_raw if ct.strip()]
-        
-        # === Сопоставляем тексты правильных ответов с индексами вариантов ===
         correct_indices = []
-        options_normalized = [(i+1, normalize_text(opt)) for i, opt in enumerate(options)]
-        
-        # Локальный список частичных совпадений для этого вопроса
         question_partial_matches = []
         
-        for correct_text in correct_texts:
-            found = False
-            
-            # 1. Сначала ищем ТОЧНОЕ совпадение
-            for idx, opt_norm in options_normalized:
-                if correct_text == opt_norm:
-                    correct_indices.append(idx)
-                    found = True
-                    break
-            
-            # 2. Если не нашли — ищем ЧАСТИЧНОЕ совпадение
-            if not found:
-                for idx, opt_norm in options_normalized:
-                    if correct_text in opt_norm or opt_norm in correct_text:
-                        correct_indices.append(idx)
-                        question_partial_matches.append({
-                            'correct_text': correct_text,
-                            'matched_option_idx': idx,
-                            'matched_option_text': options[idx-1]  # оригинальный текст варианта
-                        })
-                        found = True
-                        break
-            
-            # 3. Если вообще не нашли — логируем как ошибку
-            if not found:
-                question_partial_matches.append({
-                    'correct_text': correct_text,
-                    'matched_option_idx': None,
-                    'matched_option_text': None,
-                    'error': 'NOT_FOUND'
-                })
+        # ═══════════════════════════════════════════════════════
+        # НОВАЯ ЛОГИКА: определяем стратегию по наличию запятой
+        # ═══════════════════════════════════════════════════════
         
+        if ',' not in correct_part:
+            # ── СЛУЧАЙ 1: Нет запятых → точно один правильный ответ ──
+            # Пробуем только точное совпадение
+            indices, _ = _find_match(correct_part, options, allow_partial=False)
+            
+            if indices:
+                correct_indices = indices
+            else:
+                # Если точное не сработало — пробуем частичное (на случай опечаток/пробелов)
+                indices, matches = _find_match(correct_part, options, allow_partial=True)
+                correct_indices = indices
+                question_partial_matches = matches
+                
+        else:
+            # ── СЛУЧАЙ 2: Есть запятые ──
+            # Шаг А: Сначала пробуем точное совпадение ВСЕЙ строки целиком
+            # (на случай, если это один ответ, содержащий запятую)
+            indices, _ = _find_match(correct_part, options, allow_partial=False)
+            
+            if indices:
+                # Успех! Это один ответ с запятой внутри
+                correct_indices = indices
+            else:
+                # Не нашли целиком → значит ответов несколько, разбиваем по запятой
+                candidates = [c.strip() for c in correct_part.split(',') if c.strip()]
+                
+                for candidate in candidates:
+                    # Для каждого кандидата: сначала точное, потом частичное
+                    indices, matches = _find_match(candidate, options, allow_partial=False)
+                    if indices:
+                        correct_indices.extend(indices)
+                    else:
+                        # Пробуем частичное совпадение
+                        indices, matches = _find_match(candidate, options, allow_partial=True)
+                        if indices:
+                            correct_indices.extend(indices)
+                            question_partial_matches.extend(matches)
+                        else:
+                            # Совсем не нашли
+                            question_partial_matches.extend(matches)
+        
+        # Пропускаем вопрос, если не удалось сопоставить ни один ответ
         if not correct_indices:
-            continue  # Пропускаем вопросы, где не удалось сопоставить ответы
+            if verbose:
+                print(f"  ❌ Вопрос #{question_num}: не удалось сопоставить правильные ответы")
+            continue
         
         is_multiple = len(correct_indices) > 1
         
-        # Если были частичные совпадения — добавляем в глобальный лог
+        # Если были частичные совпадения — добавляем в лог для отчёта
         if question_partial_matches:
             _partial_matches_log.append({
                 'question_num': question_num,
@@ -149,7 +193,6 @@ def parse_tests_file(filepath: str, verbose: bool = True) -> List[Dict]:
                 'correct_indices': sorted(correct_indices)
             })
             
-            # Мгновенный вывод при парсинге (если verbose)
             if verbose:
                 print(f"  ⚠ Вопрос #{question_num}: '{question_text[:60]}...'")
                 for m in question_partial_matches:
@@ -157,7 +200,8 @@ def parse_tests_file(filepath: str, verbose: bool = True) -> List[Dict]:
                         print(f"     ❌ Не найдено: '{m['correct_text']}'")
                     else:
                         opt_preview = m['matched_option_text'][:50]
-                        print(f"     🔸 '{m['correct_text']}' → Вариант {m['matched_option_idx']}: '{opt_preview}...'")
+                        ratio = f" ({m.get('overlap_ratio', 100)}%)" if 'overlap_ratio' in m else ""
+                        print(f"     🔸 '{m['correct_text']}' → Вариант {m['matched_option_idx']}: '{opt_preview}...'{ratio}")
         
         questions.append({
             'text': question_text,
@@ -166,7 +210,7 @@ def parse_tests_file(filepath: str, verbose: bool = True) -> List[Dict]:
             'is_multiple': is_multiple
         })
     
-    # === Выводим сводный список в конце (если verbose и есть совпадения) ===
+    # === Выводим сводный отчёт в конце ===
     if verbose and _partial_matches_log:
         _print_summary_report()
     
@@ -199,10 +243,7 @@ def _print_summary_report():
 
 
 def get_partial_matches_log() -> List[Dict]:
-    """
-    Возвращает список вопросов с частичными совпадениями.
-    Полезно для экспорта в файл или дальнейшей обработки.
-    """
+    """Возвращает список вопросов с частичными совпадениями для экспорта"""
     return _partial_matches_log
 
 
