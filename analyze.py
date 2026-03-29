@@ -79,7 +79,7 @@ def get_question_by_id(question_id: int):
     }
 
 
-def display_question(q_ dict, show_answers: bool = True):
+def display_question(q_data: dict, show_answers: bool = True):
     """Красиво выводит вопрос для анализа"""
     print(f"\n{'='*80}")
     print(f"❓ ВОПРОС #{q_data['id']}")
@@ -162,7 +162,6 @@ def interactive_mode():
             try:
                 limit = int(cmd.split()[1])
                 questions = list_questions(limit)
-                # Показать первые 3 для примера
                 if questions:
                     print(f"\n💡 Подсказка: введите номер вопроса для детального просмотра")
             except (IndexError, ValueError):
@@ -170,11 +169,10 @@ def interactive_mode():
             continue
         
         elif cmd.startswith('hide '):
-            # Показать вопрос без ответов (для самопроверки)
             try:
                 q_id = int(cmd.split()[1])
                 q_data = get_question_by_id(q_id)
-                if q_
+                if q_data:
                     display_question(q_data, show_answers=False)
                     print("💡 Подсказка: правильные ответы скрыты. Введите 'show <номер>' чтобы увидеть.")
                 else:
@@ -184,11 +182,10 @@ def interactive_mode():
             continue
         
         elif cmd.startswith('show '):
-            # Показать вопрос с ответами
             try:
                 q_id = int(cmd.split()[1])
                 q_data = get_question_by_id(q_id)
-                if q_
+                if q_data:
                     display_question(q_data, show_answers=True)
                 else:
                     print(f"❌ Вопрос #{q_id} не найден")
@@ -201,14 +198,11 @@ def interactive_mode():
             q_id = int(user_input)
             q_data = get_question_by_id(q_id)
             
-            if q_
+            if q_data:
                 display_question(q_data, show_answers=True)
-                
-                # Быстрая статистика
                 total_opts = len(q_data['options'])
                 correct_count = len(q_data['correct_indices'])
                 print(f"📊 Статистика: {correct_count} правильный(ых) из {total_opts} вариантов")
-                
             else:
                 print(f"❌ Вопрос #{q_id} не найден в базе")
                 print("💡 Введите 'list' чтобы увидеть доступные номера")
@@ -256,7 +250,7 @@ if __name__ == "__main__":
         if sys.argv[1].isdigit():
             q_id = int(sys.argv[1])
             q_data = get_question_by_id(q_id)
-            if q_
+            if q_data:
                 display_question(q_data)
             else:
                 print(f"❌ Вопрос #{q_id} не найден")
