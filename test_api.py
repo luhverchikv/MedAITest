@@ -7,209 +7,208 @@
 
 import sys
 import time
+import json
 from datetime import datetime
 
-# Добавляем корень проекта в путь для импорта
 sys.path.insert(0, '.')
 
 from config import VEDAI_API_KEY, VEDAI_BASE_URL, DEFAULT_MODEL
-from ai_client import OpenAICompatibleClient
 
 
 def print_header(text: str):
-    """Красивый заголовок"""
     print(f"\n{'='*60}")
     print(f"  {text}")
     print(f"{'='*60}\n")
 
 
-def test_connection():
-    """Проверяет базовое подключение к API"""
-    print_header("🔌 ПРОВЕРКА ПОДКЛЮЧЕНИЯ")
+def debug_api_endpoints():
+    """Проверяем доступные endpoint'ы API"""
+    print_header("🔍 ДИАГНОСТИКА API ENDPOINTS")
     
-    print(f"📍 Base URL: {VEDAI_BASE_URL}")
-    print(f"🔑 API Key: {'✓ настроен' if VEDAI_API_KEY else '✗ НЕ НАСТРОЕН!'}")
-    print(f"🤖 Модель: {DEFAULT_MODEL}")
+    import requests
     
-    if not VEDAI_API_KEY:
-        print("\n❌ Ошибка: Добавьте VEDAI_API_KEY в файл .env")
-        return False
+    base = VEDAI_BASE_URL.rstrip('/')
+    endpoints_to_check = [
+        "",
+        "/models",
+        "/chat/completions",
+        "/v1/models",
+        "/v1/chat/completions",
+    ]
     
-    client = OpenAICompatibleClient(
-        api_key=VEDAI_API_KEY,
-        base_url=VEDAI_BASE_URL,
-        model=DEFAULT_MODEL
-    )
+    headers = {"Authorization": f"Bearer {VEDAI_API_KEY}"}
     
-    success, message = client.test_connection()
-    
-    if success:
-        print(f"\n✅ {message}")
-        return True
-    else:
-        print(f"\n❌ {message}")
-        return False
-
-
-def test_simple_query():
-    """Отправляет простой тестовый запрос"""
-    print_header("💬 ТЕСТОВЫЙ ЗАПРОС")
-    
-    client = OpenAICompatibleClient(
-        api_key=VEDAI_API_KEY,
-        base_url=VEDAI_BASE_URL,
-        model=DEFAULT_MODEL
-    )
-    
-    # Простой вопрос для проверки
-    test_prompt = "Какая модель искусственного интеллекта сейчас обрабатывает этот запрос? Ответь кратко, одним предложением."
-    
-    print(f"📤 Отправляю запрос модели '{DEFAULT_MODEL}'...")
-    print(f"📝 Промт: \"{test_prompt}\"\n")
-    
-    start = time.time()
-    
-    # Используем прямой запрос к API (без парсинга медицинских ответов)
-    try:
-        import requests
-        
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {VEDAI_API_KEY}"
-        }
-        
-        payload = {
-            "model": DEFAULT_MODEL,
-            "messages": [
-                {"role": "system", "content": "Ты полезный ассистент. Отвечай кратко и по делу."},
-                {"role": "user", "content": test_prompt}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 150,
-            "stream": False
-        }
-        
-        response = requests.post(
-            f"{VEDAI_BASE_URL.rstrip('/')}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
-        
-        elapsed = time.time() - start
-        
-        if response.status_code == 200:
-            data = response.json()
-            ai_answer = data['choices'][0]['message']['content'].strip()
-            
-            print(f"⏱ Время ответа: {elapsed:.2f} сек")
-            print(f"\n🤖 Ответ модели:\n   «{ai_answer}»\n")
-            
-            # Проверка, что ответ содержит название модели или осмысленный текст
-            if len(ai_answer) > 10 and not ai_answer.lower().startswith('error'):
-                print("✅ Ответ получен и выглядит корректно!")
-                return True
+    for endpoint in endpoints_to_check:
+        url = base + endpoint
+        try:
+            response = requests.get(url, headers=headers, timeout=5)
+            status = response.status_code
+            if status == 200:
+                print(f"✅ {endpoint:25} → HTTP {status}")
+                # Показываем часть ответа
+                try:
+                    data = response.json()
+                    if 'data' in data and len(data['data']) > 0:
+                        print(f"      Доступно моделей: {len(data['data'])}")
+                        if endpoint.endswith('models'):
+                            first_model = data['data'][0].get('id', 'unknown')
+                            print(f"      Пример: {first_model}")
+                except:
+                    pass
+            elif status == 404:
+                print(f"❌ {endpoint:25} → HTTP {status} (не найден)")
+            elif status == 401:
+                print(f"🔐 {endpoint:25} → HTTP {status} (неверный ключ)")
             else:
-                print("⚠️ Ответ получен, но может быть неполным")
-                return True
-        else:
-            print(f"❌ HTTP {response.status_code}: {response.text[:200]}")
-            return False
+                print(f"⚠️  {endpoint:25} → HTTP {status}")
+        except Exception as e:
+            print(f"❌ {endpoint:25} → Ошибка: {e}")
+
+
+def test_model_direct(model_name: str):
+    """Прямой тест конкретной модели"""
+    print_header(f"🧪 ТЕСТ МОДЕЛИ: {model_name}")
+    
+    import requests
+    
+    base = VEDAI_BASE_URL.rstrip('/')
+    # Пробуем несколько вариантов endpoint
+    possible_endpoints = [
+        f"{base}/chat/completions",
+        f"{base}/v1/chat/completions",
+    ]
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {VEDAI_API_KEY}"
+    }
+    
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "user", "content": "Привет! Какая ты модель? Ответь кратко."}
+        ],
+        "max_tokens": 50,
+        "temperature": 0.3
+    }
+    
+    for endpoint in possible_endpoints:
+        print(f"\n📡 Пробую endpoint: {endpoint}")
+        try:
+            start = time.time()
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            elapsed = time.time() - start
             
-    except requests.exceptions.Timeout:
-        print(f"❌ Таймаут запроса (>30 сек)")
-        return False
-    except requests.exceptions.ConnectionError:
-        print(f"❌ Не удалось подключиться к {VEDAI_BASE_URL}")
-        return False
-    except Exception as e:
-        print(f"❌ Ошибка: {type(e).__name__}: {e}")
-        return False
+            if response.status_code == 200:
+                data = response.json()
+                print(f"✅ УСПЕХ! HTTP 200 за {elapsed:.2f}с")
+                
+                # Парсим ответ
+                if 'choices' in data and len(data['choices']) > 0:
+                    answer = data['choices'][0]['message']['content']
+                    print(f"\n🤖 Ответ модели:\n   \"{answer.strip()}\"\n")
+                    
+                    # Показываем полную информацию
+                    print("📊 Полный ответ API:")
+                    print(json.dumps(data, indent=2, ensure_ascii=False)[:500])
+                    return True
+                    
+            elif response.status_code == 404:
+                print(f"❌ HTTP 404 - Модель или endpoint не найден")
+                print(f"   Ответ сервера: {response.text[:200]}")
+                
+            elif response.status_code == 401:
+                print(f"🔐 HTTP 401 - Неверный API ключ")
+                return False
+                
+            elif response.status_code == 429:
+                print(f"⏳ HTTP 429 - Превышен лимит запросов")
+                
+            else:
+                print(f"⚠️  HTTP {response.status_code}")
+                print(f"   Ответ: {response.text[:300]}")
+                
+        except requests.exceptions.Timeout:
+            print(f"⏱ Таймаут (>30 сек)")
+        except Exception as e:
+            print(f"❌ Ошибка: {type(e).__name__}: {e}")
+    
+    return False
 
 
-def test_medical_prompt():
-    """Тестирует промт в медицинском стиле (как в основном проекте)"""
-    print_header("🩺 ТЕСТ МЕДИЦИНСКОГО ПРОМТА")
+def list_available_models():
+    """Получаем список доступных моделей от API"""
+    print_header("📚 ДОСТУПНЫЕ МОДЕЛИ ОТ API")
     
-    client = OpenAICompatibleClient(
-        api_key=VEDAI_API_KEY,
-        base_url=VEDAI_BASE_URL,
-        model=DEFAULT_MODEL
-    )
+    import requests
     
-    # Пример медицинского вопроса с вариантами
-    question = "Какой препарат является препаратом первого выбора при лечении артериальной гипертензии?"
-    options = [(1, "Ингибиторы АПФ"), (2, "Бета-блокаторы"), (3, "Диуретики"), (4, "Антагонисты кальция")]
+    base = VEDAI_BASE_URL.rstrip('/')
+    endpoints = [f"{base}/models", f"{base}/v1/models"]
     
-    print(f"📋 Вопрос: {question}")
-    print(f"🔢 Варианты: {', '.join([f'{i}. {t}' for i, t in options])}")
-    print(f"🎯 Ожидаемый формат: только номер ответа (например: 1)\n")
+    headers = {"Authorization": f"Bearer {VEDAI_API_KEY}"}
     
-    success, indices, error = client.get_answer(question, options, is_multiple=False)
+    for endpoint in endpoints:
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data:
+                    models = data['data']
+                    print(f"✅ Найдено моделей: {len(models)}\n")
+                    
+                    # Группируем по категориям
+                    for model in models[:20]:  # Показываем первые 20
+                        model_id = model.get('id', 'unknown')
+                        print(f"  • {model_id}")
+                    
+                    if len(models) > 20:
+                        print(f"  ... и ещё {len(models) - 20}")
+                    return True
+        except:
+            continue
     
-    if success:
-        print(f"✅ Ответ получен: индексы {indices}")
-        if indices:
-            selected = [options[i-1][1] for i in indices if 1 <= i <= len(options)]
-            print(f"   Выбранные ответы: {selected}")
-        return True
-    else:
-        print(f"❌ Ошибка: {error}")
-        return False
-
-
-def show_model_info():
-    """Показывает информацию о текущей конфигурации"""
-    print_header("⚙️ ТЕКУЩАЯ КОНФИГУРАЦИЯ")
-    
-    print(f"📅 Время проверки: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🌐 API Endpoint: {VEDAI_BASE_URL}")
-    print(f"🔑 API Key: {'настроен' if VEDAI_API_KEY else '❌ не настроен'}")
-    print(f"🤖 Модель по умолчанию: {DEFAULT_MODEL}")
-    
-    from config import MODELS_TO_TEST
-    if MODELS_TO_TEST:
-        print(f"\n📚 Доступные модели для тестирования ({len(MODELS_TO_TEST)}):")
-        for i, m in enumerate(MODELS_TO_TEST, 1):
-            print(f"   {i}. {m.get('display_name', m['name'])} ({m['name']})")
-    print()
+    print("❌ Не удалось получить список моделей")
+    return False
 
 
 def main():
-    """Главная функция запуска всех тестов"""
-    print_header("🚀 MEDAI TEST — ПРОВЕРКА API ПОДКЛЮЧЕНИЯ")
+    print_header("🚀 VEDAI API — ДИАГНОСТИКА ПОДКЛЮЧЕНИЯ")
     
-    # 1. Показываем конфигурацию
-    show_model_info()
+    print(f"📅 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🌐 API: {VEDAI_BASE_URL}")
+    print(f"🔑 Ключ: {'настроен' if VEDAI_API_KEY else '❌ НЕ настроен!'}")
+    print(f"🤖 Модель: {DEFAULT_MODEL}")
     
-    # 2. Базовое подключение
-    if not test_connection():
-        print("\n💡 Подсказка: Проверьте VEDAI_API_KEY в файле .env")
+    if not VEDAI_API_KEY:
+        print("\n❌ Добавьте VEDAI_API_KEY в .env файл!")
         return
     
-    # 3. Простой запрос
-    if not test_simple_query():
-        print("\n⚠️ Простой запрос не прошёл, но пробуем дальше...")
+    # 1. Проверяем endpoints
+    debug_api_endpoints()
     
-    print()  # разделитель
+    # 2. Получаем список моделей
+    list_available_models()
     
-    # 4. Медицинский промт
-    test_medical_prompt()
+    # 3. Тестируем конкретную модель
+    test_model_direct(DEFAULT_MODEL)
     
-    # Финал
-    print_header("✨ ПРОВЕРКА ЗАВЕРШЕНА")
-    print("✅ Если вы видите этот текст — базовое взаимодействие с API работает!")
-    print("\n📌 Далее можно запускать полноценное тестирование:")
-    print("   python run_test.py --model qwen2.5-72b-instruct 5\n")
+    print_header("✨ ГОТОВО")
+    print("💡 Попробуйте другие модели из списка выше:")
+    print("   python -c \"from test_api import test_model_direct; test_model_direct('gemini-2.5-flash-lite')\"")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n⏹ Прервано пользователем")
+        print("\n\n⏹ Прервано")
     except Exception as e:
-        print(f"\n❌ Критическая ошибка: {e}")
+        print(f"\n❌ Ошибка: {e}")
         import traceback
         traceback.print_exc()
 
