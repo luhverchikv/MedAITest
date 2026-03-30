@@ -126,74 +126,6 @@ def run_single_model_test(
     return result
 
 
-def run_all_models_comparison(max_questions: int = None, verbose: bool = True):
-    """Запускает тестирование всех моделей из конфига и сравнивает результаты"""
-    if not MODELS_TO_TEST:
-        print("❌ Нет моделей в конфигурации (MODELS_TO_TEST в config.py)")
-        return
-
-    print(f"\n🔬 ЗАПУСК СРАВНИТЕЛЬНОГО ТЕСТИРОВАНИЯ")
-    print(f"   Моделей: {len(MODELS_TO_TEST)}")
-    print(f"   API: {VEDAI_BASE_URL}")
-    print("="*70)
-
-    all_results = []
-    
-    for model_config in MODELS_TO_TEST:
-        model_name = model_config["name"]
-        display_name = model_config.get("display_name", model_name)
-        
-        result = run_single_model_test(
-            model_name=model_name,
-            display_name=display_name,
-            max_questions=max_questions,
-            verbose=verbose
-        )
-        
-        if result:
-            all_results.append(result)
-        
-        # Пауза между моделями
-        if model_config != MODELS_TO_TEST[-1]:
-            print(f"\n⏳ Пауза 10с перед следующей моделью...")
-            time.sleep(10)
-
-    # 📊 Сводная таблица результатов
-    if all_results:
-        print(f"\n📊 СВОДНАЯ ТАБЛИЦА РЕЗУЛЬТАТОВ")
-        print(f"{'='*70}")
-        print(f"{'Модель':<25} {'Точность':>10} {'Прав/Всего':>12} {'Время':>8} {'Ошибки':>7}")
-        print(f"{'-'*70}")
-        
-        # Сортировка по точности (по убыванию)
-        sorted_results = sorted(
-            [r for r in all_results if r.get('success')], 
-            key=lambda x: x['score_percentage'], 
-            reverse=True
-        )
-        
-        for r in sorted_results:
-            name = r['display_name'] or r['model']
-            if len(name) > 24:
-                name = name[:21] + "..."
-            print(f"{name:<25} {r['score_percentage']:>9.1f}% {r['correct_answers']}/{r['total_questions']:>8} {r['time_seconds']:>7.1f}с {r['errors']:>7}")
-        
-        print(f"{'='*70}")
-        
-        # Сохранение результатов в файл
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"results_comparison_{timestamp}.json"
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump({
-                "timestamp": timestamp,
-                "base_url": VEDAI_BASE_URL,
-                "results": all_results
-            }, f, ensure_ascii=False, indent=2)
-        print(f"💾 Результаты сохранены в {filename}")
-
-    return all_results
-
-
 def show_results(run_id: int):
     """Показывает детальные результаты запуска"""
     results = get_run_results(run_id)
@@ -231,10 +163,7 @@ if __name__ == "__main__":
         
         if arg == "--results" and len(sys.argv) > 2:
             show_results(int(sys.argv[2]))
-        elif arg == "--compare":
-            # Запуск сравнения всех моделей
-            max_q = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else None
-            run_all_models_comparison(max_questions=max_q)
+        
         elif arg == "--model" and len(sys.argv) > 2:
             # Запуск одной конкретной модели
             model_name = sys.argv[2]
@@ -244,16 +173,14 @@ if __name__ == "__main__":
             show_results(int(arg))
         else:
             print("""
-Использование:
+  Использование:
   python run_test.py                    — запуск всех моделей из config.py
-  python run_test.py --compare          — то же, явно
-  python run_test.py --compare 50       — сравнение, первые 50 вопросов
   python run_test.py --model qwen2.5-72b-instruct  — одна модель
   python run_test.py --model <name> 50  — одна модель, 50 вопросов
   python run_test.py --results <run_id> — показать результаты
   python run_test.py <run_id>           — показать результаты (короткая форма)
             """)
     else:
-        # По умолчанию — запуск сравнения всех моделей
-        run_all_models_comparison()
+        # По умолчанию — запуск  gpt-5-nano
+        run_single_model_test(model_name="gpt-5-nano", max_questions=None)
 
