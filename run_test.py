@@ -122,7 +122,7 @@ def run_single_model_test(
         print(f" ⚠️ Ошибок API: {errors}")
         print(f" ⏱ Время: {result['time_seconds']}с")
         print(f"{'='*60}\n")
-
+        print(f" Для просмотра результатов python run_test.py --results {run_id}")
     return result
 
 
