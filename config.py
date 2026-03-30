@@ -20,17 +20,19 @@ VEDAI_API_KEY = os.getenv("VEDAI_API_KEY", "")
 VEDAI_BASE_URL = os.getenv("VEDAI_BASE_URL", "https://vedai.by/api/v1")
 
 # === Конфигурация моделей для тестирования ===
-# Список моделей для сравнения (можно добавлять любые из каталога vedai.by)
+# ЭКОНОМНЫЕ модели (быстрые и дешёвые)
 MODELS_TO_TEST: List[Dict[str, str]] = [
-    {"name": "qwen2.5-72b-instruct", "display_name": "Qwen 2.5 72B"},
-    {"name": "deepseek-chat", "display_name": "DeepSeek Chat"},
-    {"name": "gemini-2.0-flash", "display_name": "Gemini 2.0 Flash"},
-    # Добавьте другие модели по желанию:
-    # {"name": "llama-3.1-70b-instruct", "display_name": "Llama 3.1 70B"},
+    {"name": "gemma-3-27b-it:free", "display_name": "Gemma 3 27B (Free) 🆓"},
+    {"name": "gpt-5-nano", "display_name": "GPT-5 Nano ⚡"},
+    {"name": "gemini-2.5-flash-lite", "display_name": "Gemini 2.5 Flash Lite 💎"},
+    {"name": "gpt-5-mini", "display_name": "GPT-5 Mini 📱"},
+    {"name": "llama-4-maverick", "display_name": "Llama 4 Maverick 🦙"},
+    # Стандартные (качественнее, но дороже)
+    {"name": "gemini-2.5-pro", "display_name": "Gemini 2.5 Pro ⭐"},
 ]
 
-# Модель по умолчанию (для одиночного запуска)
-DEFAULT_MODEL = MODELS_TO_TEST[0]["name"] if MODELS_TO_TEST else "qwen2.5-72b-instruct"
+# Модель по умолчанию (бесплатная для тестов)
+DEFAULT_MODEL = "gemma-3-27b-it:free"
 
 # === Настройки тестирования ===
 MAX_QUESTIONS = None  # None = все вопросы, или число (например 50)
