@@ -1,5 +1,11 @@
 # config.py
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+env_path = Path(__file__).parent / ".env"
+load_dotenv(env_path)
+
 
 DB_PATH = "test_database.sqlite"
 INPUT_FILE = "tests_data.txt"
