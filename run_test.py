@@ -174,7 +174,7 @@ if __name__ == "__main__":
         else:
             print("""
   Использование:
-  python run_test.py                    — запуск всех моделей из config.py
+  python run_test.py                    — запуск gpt-5-nano
   python run_test.py --model qwen2.5-72b-instruct  — одна модель
   python run_test.py --model <name> 50  — одна модель, 50 вопросов
   python run_test.py --results <run_id> — показать результаты
