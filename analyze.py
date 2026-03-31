@@ -287,6 +287,9 @@ def find_hard_questions(run_ids: list[int] = None, threshold: float = 0.5):
 # ============================================================================
 # 🎯 MAIN — ТОЧКА ВХОДА
 # ============================================================================
+# ============================================================================
+# 🎯 MAIN — ИСПРАВЛЕННЫЙ ARGPARSE
+# ============================================================================
 
 if __name__ == "__main__":
     import argparse
@@ -296,63 +299,71 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры:
-  %(prog)s 1                    — анализ запуска #1
-  %(prog)s 1 --detailed         — с деталями по вопросам
-  %(prog)s compare 1 2 3        — сравнение трёх запусков
-  %(prog)s hard                 — найти сложные вопросы (J < 0.5)
-  %(prog)s hard 1 2 --t 0.3     — сложные вопросы в запусках 1,2 (порог 0.3)
+  %(prog)s --run 1                    — анализ запуска #1
+  %(prog)s --run 1 -d                 — с деталями по вопросам
+  %(prog)s compare 1 2 3              — сравнение трёх запусков
+  %(prog)s hard                       — найти сложные вопросы (J < 0.5)
+  %(prog)s hard --runs 1 2 -t 0.3     — сложные вопросы в запусках 1,2
         """
     )
     
-    parser.add_argument('run_id', nargs='?', type=int, help='ID запуска для анализа')
-    parser.add_argument('--detailed', '-d', action='store_true', help='Показать детали по вопросам')
-    parser.add_argument('--json', type=str, help='Экспорт результатов в JSON-файл')
+    # 🔹 Используем ФЛАГ --run вместо позиционного аргумента
+    parser.add_argument('--run', '-r', type=int, help='ID запуска для анализа')
+    parser.add_argument('-d', '--detailed', action='store_true', help='Детали по вопросам')
+    parser.add_argument('--json', type=str, help='Экспорт в JSON-файл')
     
+    # Субкоманды
     subparsers = parser.add_subparsers(dest='command', help='Дополнительные команды')
     
-    # Сравнение запусков
-    compare_parser = subparsers.add_parser('compare', help='Сравнить несколько запусков')
-    compare_parser.add_argument('runs', type=int, nargs='+', help='ID запусков для сравнения')
+    # compare: сравнение запусков
+    cmp_p = subparsers.add_parser('compare', help='Сравнить несколько запусков')
+    cmp_p.add_argument('runs', type=int, nargs='+', help='ID запусков для сравнения')
     
-    # Поиск сложных вопросов
-    hard_parser = subparsers.add_parser('hard', help='Найти вопросы с низким Jaccard')
-    hard_parser.add_argument('runs', type=int, nargs='*', help='ID запусков (опционально)')
-    hard_parser.add_argument('--threshold', '-t', type=float, default=0.5, help='Порог Jaccard (по умолчанию 0.5)')
+    # hard: поиск сложных вопросов
+    hard_p = subparsers.add_parser('hard', help='Найти вопросы с низким Jaccard')
+    hard_p.add_argument('--runs', '-R', type=int, nargs='*', help='ID запусков (опционально)')
+    hard_p.add_argument('-t', '--threshold', type=float, default=0.5, help='Порог Jaccard')
     
     args = parser.parse_args()
     
-    # Обработка команд
-    if args.command == 'compare' and args.runs:
-        compare_runs(args.runs)
-        
+    # 🔹 Обработка команд
+    if args.command == 'compare':
+        if not hasattr(args, 'runs') or not args.runs:
+            print("❌ Укажите ID запусков: python analyze.py compare 1 2 3")
+        else:
+            compare_runs(args.runs)
+            
     elif args.command == 'hard':
-        find_hard_questions(args.runs if args.runs else None, threshold=args.threshold)
+        runs = args.runs if hasattr(args, 'runs') and args.runs else None
+        find_hard_questions(runs, threshold=args.threshold)
         
-    elif args.run_id:
-        # Анализ одного запуска
-        stats = analyze_run(args.run_id, detailed=args.detailed)
+    elif args.run:
+        # Анализ одного запуска по флагу --run
+        stats = analyze_run(args.run, detailed=args.detailed)
         print_analysis(stats, detailed=args.detailed)
         
-        # Экспорт в JSON если запрошено
-        if args.json and stats:
+        # Экспорт в JSON
+        if args.json and stats and 'error' not in stats:
             import json
-            # Убираем детали для компактности, если не detailed
-            export_stats = {k: v for k, v in stats.items() if k != 'details' or args.detailed}
+            export = {k: v for k, v in stats.items() if k != 'details' or args.detailed}
             with open(args.json, 'w', encoding='utf-8') as f:
-                json.dump(export_stats, f, ensure_ascii=False, indent=2)
-            print(f"💾 Результаты экспортированы в {args.json}")
+                json.dump(export, f, ensure_ascii=False, indent=2)
+            print(f"💾 Экспорт: {args.json}")
             
     else:
-        # Нет аргументов — показать последние запуски
+        # Нет аргументов — показать справку и последние запуски
         print("📊 MedAITest Analysis — Индекс Жаккара")
-        print("Использование: python analyze.py <run_id> [опции]")
-        print("Или: python analyze.py --help для справки")
+        print("Использование:")
+        print("  python analyze.py --run <ID> [-d] [--json file]")
+        print("  python analyze.py compare <ID1> <ID2> ...")
+        print("  python analyze.py hard [--runs ID1 ID2] [-t порог]")
+        print("  python analyze.py --help")
         
-        # Показать последние 5 запусков
+        # Показать последние запуски
         runs = get_all_runs(limit=5)
         if runs:
             print(f"\n📋 Последние запуски:")
             for r in runs:
-                print(f"  #{r['id']} | {r['model_name']} | {r['started_at']}")
-            print(f"\nПример: python analyze.py {runs[0]['id']}")
+                print(f"  #{r['id']} | {r['model_name']} | {r['timestamp']}")
+            print(f"\n💡 Пример: python analyze.py --run {runs[0]['id']}")
 
