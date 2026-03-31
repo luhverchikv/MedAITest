@@ -204,7 +204,66 @@ def run_test(
     return run_id
 
 
+# ============================================================================
+# 🎯 ЗАПУСК С АРГУМЕНТАМИ КОМАНДНОЙ СТРОКИ
+# ============================================================================
+
 if __name__ == "__main__":
-    # Простой запуск без аргументов
-    run_test()
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="🏥 MedAITest — Тестирование медицинских вопросов через AI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Примеры использования:
+  %(prog)s                              — запуск с настройками из config.py
+  %(prog)s --model gemini-2.5-flash-lite  — указать конкретную модель
+  %(prog)s -n 50                        — протестировать 50 вопросов
+  %(prog)s --model qwen2.5-72b -n 10    — модель + количество вопросов
+  %(prog)s --fast                       — без задержек (быстро, но рискованно)
+        """
+    )
+    
+    # Аргументы
+    parser.add_argument(
+        "--model", "-m", 
+        type=str, 
+        default=None,
+        help="Название модели для тестирования (переопределяет DEFAULT_MODEL из config.py)"
+    )
+    
+    parser.add_argument(
+        "--questions", "-n", 
+        type=int, 
+        default=None,
+        help="Количество вопросов для теста (переопределяет MAX_QUESTIONS из config.py)"
+    )
+    
+    parser.add_argument(
+        "--fast", 
+        action="store_true",
+        help="Режим без задержек между запросами (REQUEST_DELAY = 0)"
+    )
+    
+    parser.add_argument(
+        "--quiet", "-q", 
+        action="store_true",
+        help="Тихий режим: минимум вывода в консоль (логи всё равно пишутся в файл)"
+    )
+    
+    # Парсим аргументы
+    args = parser.parse_args()
+    
+    # Переопределяем настройки при необходимости
+    if args.fast:
+        import config
+        config.REQUEST_DELAY = 0.0  # временное изменение для этого запуска
+    
+    # Запускаем тест
+    run_test(
+        model_name=args.model,
+        max_questions=args.questions,
+        verbose=not args.quiet,
+        log_to_file=True  # всегда пишем в файл
+    )
 
