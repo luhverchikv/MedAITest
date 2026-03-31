@@ -110,7 +110,7 @@ def analyze_run(run_id: int, detailed: bool = False) -> dict:
     stats = {
         'run_id': run_id,
         'model': run_info['model_name'],
-        'timestamp': run_info['started_at'],
+        'timestamp': run_info.get('timestamp', 'unknown'),
         'total_questions': n,
         
         # Основные метрики Jaccard
