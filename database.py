@@ -190,3 +190,23 @@ def get_run_summary(run_id: int) -> Dict:
             'score_percentage': round(percentage, 2)
         }
 
+
+def get_run_info(run_id: int):
+    """Получает базовую информацию о запуске"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, model_name, timestamp FROM test_runs WHERE id = ?", (run_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+def get_all_runs(limit: int = 10):
+    """Получает список последних запусков"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, model_name, timestamp 
+            FROM test_runs 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
