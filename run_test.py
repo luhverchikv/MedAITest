@@ -16,7 +16,7 @@ from database import (
 )
 from ai_client import OpenAICompatibleClient
 from config import (
-    VEDAI_API_KEY, VEDAI_BASE_URL, DEFAULT_MODEL,
+    VEDAI_API_KEY, VEDAI_BASE_URL,
     MAX_QUESTIONS, SAVE_PROGRESS_EVERY, REQUEST_DELAY,
     TEMPERATURE, MAX_TOKENS
 )
