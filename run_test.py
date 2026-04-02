@@ -115,7 +115,7 @@ def run_test(
         questions = questions[:MAX_QUESTIONS]
 
     # 4️⃣ Создаём запуск
-    model = model_name or DEFAULT_MODEL
+    model = model_name
     run_id = create_test_run(test['id'], model)
 
     # 5️⃣ Настраиваем логирование
