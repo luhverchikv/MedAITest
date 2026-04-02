@@ -1,4 +1,4 @@
-*.sqlite
+#*.sqlite
 info.log
 error.log
 # Byte-compiled / optimized / DLL files
