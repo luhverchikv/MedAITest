@@ -11,7 +11,7 @@ from database import (
     init_db, get_all_tests, get_test_by_id, get_test_by_name,
     create_test, delete_test, delete_questions_by_test,
     export_test, import_test, get_database_stats,
-    get_questions_by_test
+    get_questions_by_test, save_question
 )
 from parser import parse_tests_file
 
@@ -236,7 +236,6 @@ def load_from_folder(folder: str = "tests"):
 
         # Сохраняем вопросы
         for q in questions:
-            from database import save_question
             save_question(
                 test_id=test_id,
                 text=q['text'],
