@@ -1,1 +1,6 @@
-#
+test_name: "Неврология"
+category: "neurology"
+author: "Я"
+description: "Тесты по неврологии на врачебную категорию"
+version: "1.0"
+difficulty: "intermediate"
