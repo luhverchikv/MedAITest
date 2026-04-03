@@ -1,39 +1,94 @@
 # database.py
+"""
+MedAITest — База данных для управления тестами и результатами
+Поддержка множественных тестов с возможностью обмена между пользователями
+"""
 import sqlite3
+import json
+import hashlib
 from contextlib import contextmanager
-from typing import List, Dict
+from datetime import datetime
+from typing import List, Dict, Optional
+from pathlib import Path
 from config import DB_PATH
 
 
 @contextmanager
-def get_db_connection():
-    """Контекстный менеджер для безопасной работы с БД"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # Доступ к колонкам по имени
-    try:
-        yield conn
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        print(f"Ошибка БД: {e}")
-        raise
-    finally:
-        conn.close()
+def get_db_connection(timeout: int = 30, retries: int = 5):
+    """Контекстный менеджер для безопасной работы с БД с поддержкой WAL и retry"""
+    import time
+
+    last_error = None
+    for attempt in range(retries):
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=timeout)
+            conn.row_factory = sqlite3.Row
+            # Включаем WAL mode для лучшей параллельной работы
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA busy_timeout=30000')  # 30 секунд ожидания блокировки
+            try:
+                yield conn
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+            return  # Успех — выходим из функции
+        except sqlite3.OperationalError as e:
+            last_error = e
+            if "database is locked" in str(e) and attempt < retries - 1:
+                wait_time = (attempt + 1) * 0.5  # 0.5, 1.0, 1.5, 2.0, 2.5 секунд
+                print(f"⚠️ БД заблокирована, повторная попытка {attempt + 1}/{retries} через {wait_time:.1f}с...")
+                time.sleep(wait_time)
+            else:
+                raise
+        except Exception as e:
+            last_error = e
+            raise
+
+    # Если все попытки исчерпаны
+    raise last_error
 
 
 def init_db():
     """Создает таблицы, если их нет"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # Таблица вопросов
+
+        # Таблица тестов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                source TEXT,
+                author TEXT,
+                version TEXT DEFAULT '1.0',
+                category TEXT,
+                difficulty TEXT,
+                question_count INTEGER DEFAULT 0,
+                checksum TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Таблица вопросов (связь с тестом)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                test_id INTEGER NOT NULL,
+                external_id TEXT,
                 text TEXT NOT NULL,
                 is_multiple BOOLEAN NOT NULL,
-                correct_indices TEXT NOT NULL
+                correct_indices TEXT NOT NULL,
+                explanation TEXT,
+                FOREIGN KEY(test_id) REFERENCES tests(id) ON DELETE CASCADE
             )
         ''')
+
         # Таблица вариантов ответов
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS options (
@@ -44,14 +99,21 @@ def init_db():
                 FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE
             )
         ''')
-        # Таблица запусков тестов
+
+        # Таблица запусков тестов (связь с тестом)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS test_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                test_id INTEGER NOT NULL,
                 model_name TEXT NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                total_questions INTEGER DEFAULT 0,
+                correct_answers INTEGER DEFAULT 0,
+                score_percentage REAL DEFAULT 0,
+                FOREIGN KEY(test_id) REFERENCES tests(id) ON DELETE SET NULL
             )
         ''')
+
         # Таблица результатов
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS results (
@@ -65,220 +127,453 @@ def init_db():
             )
         ''')
 
+        # Создаем индексы для производительности
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_questions_test_id ON questions(test_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_results_run_id ON results(run_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_test_runs_test_id ON test_runs(test_id)')
 
-def save_question(text: str, is_multiple: bool, correct_indices: list, options_list: list) -> int:
+
+# =============================================================================
+# УПРАВЛЕНИЕ ТЕСТАМИ
+# =============================================================================
+
+def create_test(name: str, description: str = "", source: str = "", author: str = "",
+                category: str = "", difficulty: str = "") -> int:
     """
-    Сохраняет вопрос и его варианты в БД
-    Возвращает ID сохраненного вопроса
+    Создает новый тест.
+    Returns: ID созданного теста
     """
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # Сохраняем вопрос
-        cursor.execute(
-            "INSERT INTO questions (text, is_multiple, correct_indices) VALUES (?, ?, ?)",
-            (text, is_multiple, ",".join(map(str, sorted(correct_indices)))))
-        question_id = cursor.lastrowid
-        # Сохраняем варианты ответов
-        for idx, opt_text in enumerate(options_list, start=1):
-            cursor.execute(
-                "INSERT INTO options (question_id, option_index, text) VALUES (?, ?, ?)",
-                (question_id, idx, opt_text.strip()))
-        return question_id
+        cursor.execute('''
+            INSERT INTO tests (name, description, source, author, category, difficulty)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (name, description, source, author, category, difficulty))
+        return cursor.lastrowid
 
 
-def get_all_questions():
-    """Возвращает все вопросы из БД"""
+def get_test_by_id(test_id: int) -> Optional[Dict]:
+    """Получает информацию о тесте по ID"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, text, is_multiple, correct_indices FROM questions ORDER BY id")
-        return cursor.fetchall()
-
-
-def get_options_by_question_id(question_id: int):
-    """Возвращает список вариантов для вопроса: [(1, 'текст'), (2, 'текст'), ...]"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT option_index, text FROM options WHERE question_id = ? ORDER BY option_index",
-            (question_id,))
-        return cursor.fetchall()
-
-
-def get_question_by_id(question_id: int):
-    """Возвращает информацию о вопросе по ID"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, text, is_multiple, correct_indices FROM questions WHERE id = ?",
-            (question_id,))
+        cursor.execute('SELECT * FROM tests WHERE id = ?', (test_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
 
 
+def get_test_by_name(name: str) -> Optional[Dict]:
+    """Получает информацию о тесте по имени"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM tests WHERE name = ?', (name,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_all_tests(include_inactive: bool = False) -> List[Dict]:
+    """Получает список всех тестов"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if include_inactive:
+            cursor.execute('SELECT * FROM tests ORDER BY created_at DESC')
+        else:
+            cursor.execute('SELECT * FROM tests WHERE is_active = 1 ORDER BY created_at DESC')
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def update_test(test_id: int, **kwargs):
+    """Обновляет информацию о тесте"""
+    allowed_fields = ['name', 'description', 'source', 'author', 'category',
+                     'difficulty', 'is_active', 'version']
+    updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
+
+    if not updates:
+        return
+
+    updates['updated_at'] = datetime.now().isoformat()
+
+    set_clause = ', '.join([f"{k} = ?" for k in updates.keys()])
+    values = list(updates.values()) + [test_id]
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f'UPDATE tests SET {set_clause} WHERE id = ?', values)
+
+
+def delete_test(test_id: int, permanent: bool = False):
+    """
+    Удаляет тест.
+    permanent=False: мягкое удаление (is_active = 0)
+    permanent=True: полное удаление из БД
+    """
+    if permanent:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM tests WHERE id = ?', (test_id,))
+    else:
+        update_test(test_id, is_active=False)
+
+
+def update_test_question_count(test_id: int):
+    """Обновляет счётчик вопросов в тесте"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM questions WHERE test_id = ?', (test_id,))
+        count = cursor.fetchone()[0]
+        cursor.execute('UPDATE tests SET question_count = ? WHERE id = ?', (count, test_id))
+
+
+# =============================================================================
+# УПРАВЛЕНИЕ ВОПРОСАМИ
+# =============================================================================
+
+def save_question(test_id: int, text: str, is_multiple: bool, correct_indices: list,
+                 options_list: list, external_id: str = None, explanation: str = None) -> int:
+    """
+    Сохраняет вопрос в тест.
+    Returns: ID сохраненного вопроса
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Сохраняем вопрос
+        cursor.execute('''
+            INSERT INTO questions (test_id, external_id, text, is_multiple, correct_indices, explanation)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (test_id, external_id, text, is_multiple,
+              ",".join(map(str, sorted(correct_indices))), explanation))
+        question_id = cursor.lastrowid
+
+        # Сохраняем варианты ответов
+        for idx, opt_text in enumerate(options_list, start=1):
+            cursor.execute('''
+                INSERT INTO options (question_id, option_index, text)
+                VALUES (?, ?, ?)
+            ''', (question_id, idx, opt_text.strip()))
+
+    # Обновляем счётчик в отдельном подключении (избегаем deadlock)
+    update_test_question_count(test_id)
+
+    return question_id
+
+
+def get_questions_by_test(test_id: int) -> List[Dict]:
+    """Возвращает все вопросы для указанного теста"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, test_id, external_id, text, is_multiple, correct_indices, explanation
+            FROM questions WHERE test_id = ? ORDER BY id
+        ''', (test_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_question_by_id(question_id: int) -> Optional[Dict]:
+    """Возвращает информацию о вопросе"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM questions WHERE id = ?', (question_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_options_by_question_id(question_id: int) -> List[tuple]:
+    """Возвращает варианты ответов для вопроса: [(1, 'текст'), ...]"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT option_index, text FROM options
+            WHERE question_id = ? ORDER BY option_index
+        ''', (question_id,))
+        return [(row['option_index'], row['text']) for row in cursor.fetchall()]
+
+
+def delete_questions_by_test(test_id: int):
+    """Удаляет все вопросы теста"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM options WHERE question_id IN (SELECT id FROM questions WHERE test_id = ?)', (test_id,))
+        cursor.execute('DELETE FROM questions WHERE test_id = ?', (test_id,))
+    # Обновляем счётчик в отдельном подключении
+    update_test_question_count(test_id)
+
+
+# =============================================================================
+# УПРАВЛЕНИЕ ЗАПУСКАМИ И РЕЗУЛЬТАТАМИ
+# =============================================================================
+
+def create_test_run(test_id: int, model_name: str) -> int:
+    """Создает новый запуск теста"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO test_runs (test_id, model_name, timestamp)
+            VALUES (?, ?, ?)
+        ''', (test_id, model_name, datetime.now().isoformat()))
+        return cursor.lastrowid
+
+
+def update_run_summary(run_id: int):
+    """Обновляет сводку по запуску (счётчики и проценты)"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Получаем статистику
+        cursor.execute('''
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN score = 1.0 THEN 1 ELSE 0 END) as correct
+            FROM results WHERE run_id = ?
+        ''', (run_id,))
+        stats = cursor.fetchone()
+        total = stats['total'] or 0
+        correct = stats['correct'] or 0
+        percentage = (correct / total * 100) if total > 0 else 0
+
+        # Обновляем запись
+        cursor.execute('''
+            UPDATE test_runs
+            SET total_questions = ?, correct_answers = ?, score_percentage = ?
+            WHERE id = ?
+        ''', (total, correct, percentage, run_id))
+
+
+def save_result(run_id: int, question_id: int, ai_selected_indices: List[int], score: float = None):
+    """Сохраняет результат ответа (без обновления сводки)"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        indices_str = ",".join(map(str, sorted(ai_selected_indices))) if ai_selected_indices else ""
+        cursor.execute('''
+            INSERT INTO results (run_id, question_id, ai_selected_indices, score)
+            VALUES (?, ?, ?, ?)
+        ''', (run_id, question_id, indices_str, score))
+    # ВАЖНО: НЕ вызываем update_run_summary здесь — это создаёт deadlock при частых вызовах
+    # Вызывайте update_run_summary отдельно после завершения теста
+
+
+def get_run_results(run_id: int) -> List[Dict]:
+    """Получает все результаты для запуска"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT r.*, q.text as question_text, q.is_multiple, q.correct_indices,
+                   q.explanation
+            FROM results r
+            JOIN questions q ON r.question_id = q.id
+            WHERE r.run_id = ?
+            ORDER BY r.id
+        ''', (run_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_run_info(run_id: int) -> Optional[Dict]:
+    """Получает информацию о запуске"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT tr.*, t.name as test_name, t.category
+            FROM test_runs tr
+            JOIN tests t ON tr.test_id = t.id
+            WHERE tr.id = ?
+        ''', (run_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_runs_by_test(test_id: int, limit: int = 10) -> List[Dict]:
+    """Получает запуски для указанного теста"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT tr.*, t.name as test_name
+            FROM test_runs tr
+            JOIN tests t ON tr.test_id = t.id
+            WHERE tr.test_id = ?
+            ORDER BY tr.timestamp DESC
+            LIMIT ?
+        ''', (test_id, limit))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_all_runs(limit: int = 10) -> List[Dict]:
+    """Получает все запуски"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT tr.*, t.name as test_name, t.category
+            FROM test_runs tr
+            JOIN tests t ON tr.test_id = t.id
+            ORDER BY tr.timestamp DESC
+            LIMIT ?
+        ''', (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def calculate_score(ai_indices: List[int], correct_indices: List[int]) -> float:
+    """Вычисляет оценку за ответ"""
+    return 1.0 if set(ai_indices) == set(correct_indices) else 0.0
+
+
 def clear_database():
-    """Очищает все таблицы (для отладки)"""
+    """Очищает все таблицы"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM results")
         cursor.execute("DELETE FROM test_runs")
         cursor.execute("DELETE FROM options")
         cursor.execute("DELETE FROM questions")
+        cursor.execute("DELETE FROM tests")
 
 
-def create_test_run(model_name: str) -> int:
-    """Создает новый запуск теста и возвращает его ID"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO test_runs (model_name) VALUES (?)",
-            (model_name,))
-        return cursor.lastrowid
+# =============================================================================
+# ИМПОРТ/ЭКСПОРТ ТЕСТОВ
+# =============================================================================
 
-
-def save_result(run_id: int, question_id: int, ai_selected_indices: List[int], score: float = None):
-    """Сохраняет результат ответа на вопрос"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        indices_str = ",".join(map(str, sorted(ai_selected_indices))) if ai_selected_indices else ""
-        cursor.execute(
-            "INSERT INTO results (run_id, question_id, ai_selected_indices, score) VALUES (?, ?, ?, ?)",
-            (run_id, question_id, indices_str, score))
-
-
-def get_run_results(run_id: int):
-    """Получает все результаты для конкретного запуска"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT r.*, q.text as question_text, q.is_multiple, q.correct_indices
-            FROM results r
-            JOIN questions q ON r.question_id = q.id
-            WHERE r.run_id = ?
-            ORDER BY r.question_id
-        """, (run_id,))
-        return cursor.fetchall()
-
-
-def get_results_for_multiple_runs(run_ids: List[int]):
+def export_test(test_id: int, filepath: str = None) -> str:
     """
-    Получает результаты для нескольких запусков одновременно.
-    Возвращает словарь: {run_id: [results...]}
-    Используется для сравнительного анализа.
+    Экспортирует тест в JSON-файл для обмена.
+    Returns: путь к файлу
     """
-    if not run_ids:
-        return {}
+    test = get_test_by_id(test_id)
+    if not test:
+        raise ValueError(f"Тест с ID {test_id} не найден")
 
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        placeholders = ','.join('?' * len(run_ids))
-        cursor.execute(f"""
-            SELECT r.*, q.text as question_text, q.is_multiple, q.correct_indices
-            FROM results r
-            JOIN questions q ON r.question_id = q.id
-            WHERE r.run_id IN ({placeholders})
-            ORDER BY r.run_id, r.question_id
-        """, run_ids)
+    questions = get_questions_by_test(test_id)
+    export_data = {
+        "format_version": "1.0",
+        "exported_at": datetime.now().isoformat(),
+        "test": {
+            "name": test['name'],
+            "description": test['description'],
+            "source": test['source'],
+            "author": test['author'],
+            "category": test['category'],
+            "difficulty": test['difficulty'],
+            "version": test['version']
+        },
+        "questions": []
+    }
 
-        results_by_run = {}
-        for row in cursor.fetchall():
-            run_id = row['run_id']
-            if run_id not in results_by_run:
-                results_by_run[run_id] = []
-            results_by_run[run_id].append(dict(row))
+    for q in questions:
+        options = get_options_by_question_id(q['id'])
+        export_data["questions"].append({
+            "external_id": q['external_id'],
+            "text": q['text'],
+            "is_multiple": bool(q['is_multiple']),
+            "correct_indices": [int(x) for x in q['correct_indices'].split(',')],
+            "options": [{"index": idx, "text": text} for idx, text in options],
+            "explanation": q['explanation']
+        })
 
-        return results_by_run
+    # Вычисляем checksum
+    content_str = json.dumps(export_data, ensure_ascii=False, sort_keys=True)
+    export_data["checksum"] = hashlib.md5(content_str.encode()).hexdigest()
+
+    # Генерируем имя файла
+    if not filepath:
+        safe_name = "".join(c for c in test['name'] if c.isalnum() or c in (' ', '-', '_')).strip()
+        filepath = f"test_{test['name'].lower().replace(' ', '_')}_{test['version']}.json"
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+    return filepath
 
 
-def get_common_questions_across_runs(run_ids: List[int]):
+def import_test(filepath: str, replace_existing: bool = False) -> int:
     """
-    Возвращает вопросы, которые присутствуют во всех указанных запусках.
-    Полезно для сравнительного анализа — берет только общие вопросы.
+    Импортирует тест из JSON-файла.
+    replace_existing=True заменит существующий тест с тем же именем
+
+    Returns: ID импортированного теста
     """
-    if not run_ids:
-        return []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        data = json.load(f)
 
+    # Валидация формата
+    required = ['format_version', 'test', 'questions']
+    for field in required:
+        if field not in data:
+            raise ValueError(f"Неверный формат файла: отсутствует '{field}'")
+
+    test_info = data['test']
+
+    # Проверяем checksum
+    if 'checksum' in data:
+        check_data = {k: v for k, v in data.items() if k != 'checksum'}
+        check_str = json.dumps(check_data, ensure_ascii=False, sort_keys=True)
+        calc_checksum = hashlib.md5(check_str.encode()).hexdigest()
+        if calc_checksum != data['checksum']:
+            raise ValueError("Ошибка целостности: контрольная сумма не совпадает")
+
+    # Проверяем, существует ли тест
+    existing = get_test_by_name(test_info['name'])
+
+    if existing:
+        if replace_existing:
+            # Удаляем старый тест и импортируем новый
+            delete_questions_by_test(existing['id'])
+            test_id = existing['id']
+            update_test(test_id, **test_info, is_active=True)
+        else:
+            raise ValueError(f"Тест '{test_info['name']}' уже существует. "
+                           f"Используйте --replace для замены.")
+    else:
+        # Создаём новый тест
+        test_id = create_test(
+            name=test_info['name'],
+            description=test_info.get('description', ''),
+            source=test_info.get('source', ''),
+            author=test_info.get('author', ''),
+            category=test_info.get('category', ''),
+            difficulty=test_info.get('difficulty', '')
+        )
+
+    # Импортируем вопросы
+    for q_data in data['questions']:
+        options_list = [opt['text'] for opt in sorted(q_data['options'], key=lambda x: x['index'])]
+
+        save_question(
+            test_id=test_id,
+            text=q_data['text'],
+            is_multiple=q_data['is_multiple'],
+            correct_indices=q_data['correct_indices'],
+            options_list=options_list,
+            external_id=q_data.get('external_id'),
+            explanation=q_data.get('explanation')
+        )
+
+    return test_id
+
+
+# =============================================================================
+# УТИЛИТЫ
+# =============================================================================
+
+def get_database_stats() -> Dict:
+    """Возвращает статистику по базе данных"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        placeholders = ','.join('?' * len(run_ids))
 
-        # Находим вопросы, которые есть во всех запусках
-        cursor.execute(f"""
-            SELECT question_id, COUNT(DISTINCT run_id) as run_count
-            FROM results
-            WHERE run_id IN ({placeholders})
-            GROUP BY question_id
-            HAVING run_count = ?
-        """, (*run_ids, len(run_ids)))
+        stats = {}
 
-        common_question_ids = [row['question_id'] for row in cursor.fetchall()]
+        # Количество тестов
+        cursor.execute('SELECT COUNT(*) FROM tests WHERE is_active = 1')
+        stats['tests_count'] = cursor.fetchone()[0]
 
-        if not common_question_ids:
-            return []
+        # Количество вопросов
+        cursor.execute('SELECT COUNT(*) FROM questions q JOIN tests t ON q.test_id = t.id WHERE t.is_active = 1')
+        stats['questions_count'] = cursor.fetchone()[0]
 
-        # Получаем полную информацию о вопросах
-        q_placeholders = ','.join('?' * len(common_question_ids))
-        cursor.execute(f"""
-            SELECT * FROM questions
-            WHERE id IN ({q_placeholders})
-            ORDER BY id
-        """, common_question_ids)
+        # Количество запусков
+        cursor.execute('SELECT COUNT(*) FROM test_runs')
+        stats['runs_count'] = cursor.fetchone()[0]
 
-        return [dict(row) for row in cursor.fetchall()]
+        # Тесты по категориям
+        cursor.execute('''
+            SELECT category, COUNT(*) as count
+            FROM tests WHERE is_active = 1 AND category != ''
+            GROUP BY category
+        ''')
+        stats['by_category'] = {row['category']: row['count'] for row in cursor.fetchall()}
 
-
-def calculate_score(ai_indices: List[int], correct_indices: List[int]) -> float:
-    """Вычисляет оценку за ответ (1 - правильно, 0 - неправильно)"""
-    ai_set = set(ai_indices)
-    correct_set = set(correct_indices)
-    return 1.0 if ai_set == correct_set else 0.0
-
-
-def get_run_summary(run_id: int) -> Dict:
-    """Получает сводку по запуску"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        # Информация о запуске
-        cursor.execute("SELECT model_name, timestamp FROM test_runs WHERE id = ?", (run_id,))
-        run_info = cursor.fetchone()
-        # Статистика
-        cursor.execute("""
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN score = 1.0 THEN 1 ELSE 0 END) as correct
-            FROM results
-            WHERE run_id = ?
-        """, (run_id,))
-        stats = cursor.fetchone()
-        total = stats['total'] or 0
-        correct = stats['correct'] or 0
-        percentage = (correct / total * 100) if total > 0 else 0
-        return {
-            'run_id': run_id,
-            'model_name': run_info['model_name'],
-            'timestamp': run_info['timestamp'],
-            'total_questions': total,
-            'correct_answers': correct,
-            'score_percentage': round(percentage, 2)
-        }
-
-
-def get_run_info(run_id: int):
-    """Получает базовую информацию о запуске"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, model_name, timestamp FROM test_runs WHERE id = ?", (run_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
-
-
-def get_all_runs(limit: int = 10):
-    """Получает список последних запусков"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, model_name, timestamp
-            FROM test_runs
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (limit,))
-        return [dict(row) for row in cursor.fetchall()]
+        return stats
